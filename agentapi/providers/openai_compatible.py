@@ -80,7 +80,20 @@ class OpenAICompatibleProvider(BaseProvider):
                     status_code=502,
                 ) from exc
 
-        message = data["choices"][0]["message"]
+        choices = data.get("choices")
+        if not choices:
+            raise AgentProviderError(
+                f"Provider returned an empty or missing 'choices' field for model '{self.model}'. "
+                f"Raw response: {str(data)[:200]}",
+                status_code=502,
+            )
+
+        message = choices[0].get("message")
+        if message is None:
+            raise AgentProviderError(
+                f"Provider returned a 'choices[0]' entry with no 'message' field for model '{self.model}'.",
+                status_code=502,
+            )
         raw_tool_calls = message.get("tool_calls") or []
         tool_calls = [
             ToolCall(
