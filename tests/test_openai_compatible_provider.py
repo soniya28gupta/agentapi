@@ -9,7 +9,6 @@ empty choices gracefully via `chunk.get("choices") or []`.
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -83,7 +82,11 @@ async def test_chat_valid_response():
 
 @pytest.mark.asyncio
 async def test_chat_missing_choices_key():
-    """Response JSON with no 'choices' key raises AgentProviderError (502)."""
+    """Response JSON with no 'choices' key raises AgentProviderError (502).
+
+    data.get('choices') returns None when the key is absent; None is not a list,
+    so the isinstance(choices, list) guard fires first.
+    """
     body = {"id": "chatcmpl-abc", "object": "chat.completion"}  # no "choices"
     provider = _make_provider()
     with _patch_client(body):
@@ -92,7 +95,7 @@ async def test_chat_missing_choices_key():
 
     err = exc_info.value
     assert err.status_code == 502
-    assert "empty or missing" in str(err).lower() or "choices" in str(err)
+    assert "non-list" in str(err) or "choices" in str(err)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +150,46 @@ async def test_chat_missing_message_in_first_choice():
     err = exc_info.value
     assert err.status_code == 502
     assert "message" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# 6. choices is a non-list type (e.g. a string)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_choices_is_non_list_string():
+    """choices='invalid' (truthy non-list) raises AgentProviderError (502).
+
+    This case was NOT caught by the old `not choices` falsy check because a
+    non-empty string is truthy. The new isinstance(choices, list) guard catches it.
+    """
+    body = {"choices": "invalid"}
+    provider = _make_provider()
+    with _patch_client(body):
+        with pytest.raises(AgentProviderError) as exc_info:
+            await provider.chat([{"role": "user", "content": "Hi"}])
+
+    err = exc_info.value
+    assert err.status_code == 502
+    assert "non-list" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# 7. choices[0] is not a dict
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chat_choices_first_element_not_dict():
+    """choices[0] being a non-dict (e.g. a string) raises AgentProviderError (502)."""
+    body = {"choices": ["not-a-dict"]}
+    provider = _make_provider()
+    with _patch_client(body):
+        with pytest.raises(AgentProviderError) as exc_info:
+            await provider.chat([{"role": "user", "content": "Hi"}])
+
+    err = exc_info.value
+    assert err.status_code == 502
+    assert "non-dict" in str(err)
 
 
 # ---------------------------------------------------------------------------

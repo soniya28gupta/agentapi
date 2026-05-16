@@ -81,10 +81,22 @@ class OpenAICompatibleProvider(BaseProvider):
                 ) from exc
 
         choices = data.get("choices")
+        if not isinstance(choices, list):
+            raise AgentProviderError(
+                f"Provider returned a non-list 'choices' field for model '{self.model}'. "
+                f"Raw response: {str(data)[:200]}",
+                status_code=502,
+            )
         if not choices:
             raise AgentProviderError(
-                f"Provider returned an empty or missing 'choices' field for model '{self.model}'. "
+                f"Provider returned an empty 'choices' list for model '{self.model}'. "
                 f"Raw response: {str(data)[:200]}",
+                status_code=502,
+            )
+        if not isinstance(choices[0], dict):
+            raise AgentProviderError(
+                f"Provider returned a non-dict entry at 'choices[0]' for model '{self.model}'. "
+                f"Got: {type(choices[0]).__name__}",
                 status_code=502,
             )
 
