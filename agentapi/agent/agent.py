@@ -71,16 +71,21 @@ class AgentStream:
     def to_streaming_response(self) -> StreamingResponse:
         """Wrap the stream in a FastAPI StreamingResponse using SSE format.
 
-        Each token is formatted as a valid SSE event: ``data: <token>\\n\\n``.
-        Provider errors are surfaced as ``data: [ERROR] <message>\\n\\n`` so the
-        client receives a clean event instead of an abrupt stream termination.
+        Each token is split on newline boundaries and emitted as valid SSE
+        frames so multi-line payloads remain a single logical SSE event.
+        Provider errors are logged server-side and surfaced as a sanitized
+        ``data: [ERROR] ...\\n\\n`` event so the client never receives raw
+        exception text.
         """
         async def _sse_generator() -> AsyncIterator[str]:
             try:
                 async for token in self._generator:
-                    yield f"data: {token}\n\n"
-            except Exception as exc:
-                yield f"data: [ERROR] {exc}\n\n"
+                    for line in str(token).replace("\r", "").split("\n"):
+                        yield f"data: {line}\n"
+                    yield "\n"
+            except AgentAPIProviderError:
+                logger.exception("[AgentAPI] Streaming error surfaced in SSE generator.")
+                yield "data: [ERROR] Streaming failed. Check server logs for details.\n\n"
 
         return StreamingResponse(_sse_generator(), media_type="text/event-stream")
 
@@ -154,9 +159,8 @@ class Agent:
             except AgentAPIProviderError:
                 raise
             except Exception as exc:
-                logger.error(
-                    "[AgentAPI] Provider error in run(): %s. Check your API key and provider configuration.",
-                    exc,
+                logger.exception(
+                    "[AgentAPI] Provider error in run(). Check your API key and provider configuration."
                 )
                 raise AgentAPIProviderError(
                     f"Provider call failed: {exc}. Check your API key and provider configuration.",
@@ -232,9 +236,8 @@ class Agent:
         except AgentAPIProviderError:
             raise
         except Exception as exc:
-            logger.error(
-                "[AgentAPI] Streaming error: %s. Check your provider configuration and API key.",
-                exc,
+            logger.exception(
+                "[AgentAPI] Streaming error. Check your provider configuration and API key."
             )
             raise AgentAPIProviderError(
                 f"Streaming failed: {exc}",
