@@ -35,61 +35,6 @@ class AgentAPIProviderError(Exception):
         self.original = original
 
 
-class AgentStream:
-    """Wrapper returned by agent.stream().
-
-    Supports both iteration patterns:
-
-    Correct usage::
-
-        # Pattern 1 — async for (recommended)
-        async for chunk in agent.stream(message):
-            print(chunk)
-
-        # Pattern 2 — FastAPI StreamingResponse (SSE)
-        return agent.stream(message).to_streaming_response()
-
-    Incorrect usage::
-
-        # This will raise AgentAPIUsageError with a helpful message
-        response = await agent.stream(message)
-    """
-
-    def __init__(self, generator: AsyncIterator[str]) -> None:
-        self._generator = generator
-
-    def __aiter__(self) -> AsyncIterator[str]:
-        return self._generator.__aiter__()
-
-    def __await__(self):
-        raise AgentAPIUsageError(
-            "agent.stream() cannot be awaited directly.\n"
-            "Use:  async for chunk in agent.stream(message): ...\n"
-            "Or:   agent.stream(message).to_streaming_response()"
-        )
-
-    def to_streaming_response(self) -> StreamingResponse:
-        """Wrap the stream in a FastAPI StreamingResponse using SSE format.
-
-        Each token is split on newline boundaries and emitted as valid SSE
-        frames so multi-line payloads remain a single logical SSE event.
-        Provider errors are logged server-side and surfaced as a sanitized
-        ``data: [ERROR] ...\\n\\n`` event so the client never receives raw
-        exception text.
-        """
-        async def _sse_generator() -> AsyncIterator[str]:
-            try:
-                async for token in self._generator:
-                    for line in str(token).replace("\r", "").split("\n"):
-                        yield f"data: {line}\n"
-                    yield "\n"
-            except AgentAPIProviderError:
-                logger.exception("[AgentAPI] Streaming error surfaced in SSE generator.")
-                yield "data: [ERROR] Streaming failed. Check server logs for details.\n\n"
-
-        return StreamingResponse(_sse_generator(), media_type="text/event-stream")
-
-
 class Agent:
     """Stateful agent with provider abstraction, tools, memory, and streaming."""
 
@@ -197,25 +142,37 @@ class Agent:
         self.memory.add({"role": "assistant", "content": fallback})
         return fallback
 
-    def stream(self, message: str) -> AgentStream:
-        """Stream model tokens and return an AgentStream object.
+    def stream(self, message: str) -> StreamingResponse:
+        """Stream model tokens as FastAPI StreamingResponse using SSE format.
+
+        Each token is split on newline boundaries and emitted as valid SSE
+        frames so multi-line payloads remain a single logical SSE event.
+        Provider errors are logged server-side and surfaced as a sanitized
+        ``data: [ERROR] ...\\n\\n`` event so the client never receives raw
+        exception text.
 
         Examples::
 
-            # Async iteration
+            # FastAPI endpoint
+            @app.post("/chat/stream")
+            async def chat_stream(message: str):
+                return agent.stream(message)
+
+            # Direct async iteration
             async for chunk in agent.stream(message):
                 print(chunk, end="", flush=True)
-
-            # FastAPI SSE endpoint
-            return agent.stream(message).to_streaming_response()
-
-        Warning:
-            Do **not** await this method directly::
-
-                # Wrong — raises AgentAPIUsageError
-                response = await agent.stream(message)
         """
-        return AgentStream(self._stream_generator(message))
+        async def _sse_generator() -> AsyncIterator[str]:
+            try:
+                async for token in self._stream_generator(message):
+                    for line in str(token).replace("\r", "").split("\n"):
+                        yield f"data: {line}\n"
+                    yield "\n"
+            except AgentAPIProviderError:
+                logger.exception("[AgentAPI] Streaming error surfaced in SSE generator.")
+                yield "data: [ERROR] Streaming failed. Check server logs for details.\n\n"
+
+        return StreamingResponse(_sse_generator(), media_type="text/event-stream")
 
     async def _stream_generator(self, message: str) -> AsyncIterator[str]:
         """Internal async generator that streams tokens from the provider."""
