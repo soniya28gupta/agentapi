@@ -1,13 +1,13 @@
 """Tool registration and JSON schema generation."""
 
 from __future__ import annotations
-
 import inspect
 import json
 import types
 from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 from collections.abc import Callable
+from agentapi.errors import AgentProviderError
 
 @dataclass
 class ToolDefinition:
@@ -178,7 +178,12 @@ def to_tool_definition(func: Callable[..., Any]) -> ToolDefinition:
 
 def parse_tool_args(args_json: str) -> dict[str, Any]:
     """Parse model tool arguments safely."""
-
     if not args_json.strip():
         return {}
-    return json.loads(args_json)
+    try:
+        return json.loads(args_json)
+    except json.JSONDecodeError as exc:
+        raise AgentProviderError(
+            f"Failed to parse tool arguments as JSON: {exc}. Raw input: {args_json[:200]!r}",
+            status_code=422,
+        ) from exc
